@@ -1,0 +1,56 @@
+name: hangman
+description: "Hangman game"
+
+publish_to: 'none' 
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.5.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Icons
+  cupertino_icons: ^1.0.8
+  font_awesome_flutter: ^10.8.0
+
+  # Storage
+  shared_preferences: ^2.3.2
+
+  # Localization:
+  flutter_localizations:
+    sdk: flutter
+  intl: any
+
+  # Bloc
+  flutter_bloc: ^8.1.6
+  bloc: ^8.1.4
+  provider: ^6.1.2
+  equatable: ^2.0.7
+
+  # Router
+  go_router: ^14.4.1
+
+  # Bluetooth
+  flutter_blue_plus: ^1.34.5
+
+  # Permission
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^4.0.0
+
+flutter:
+
+  uses-material-design: true
+
+flutter_intl:
+  enabled: true
+  main_locale: en
+  arb_dir: lib/src/common/l10n/
+  output_dir: lib/src/common/l10n/generated/

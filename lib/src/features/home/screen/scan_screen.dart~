@@ -1,0 +1,220 @@
+import 'dart:async';
+import 'dart:developer';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+import '../../../common/utils/context_extension.dart';
+
+class ScanScreen extends StatefulWidget {
+  const ScanScreen({super.key});
+
+  @override
+  State<ScanScreen> createState() => _ScanScreenState();
+}
+
+class _ScanScreenState extends State<ScanScreen> {
+  late final StreamSubscription<BluetoothAdapterState> subscription;
+  late final StreamSubscription<bool> isScanningStream;
+  late final StreamSubscription<List<ScanResult>> scanner;
+  late final StreamSubscription<BluetoothConnectionState> connect;
+  List<ScanResult> devices = [];
+  List<bool> connections = [];
+  bool isScanning = false;
+  List<bool> isConnecting = [];
+
+  void startMain() async {
+    if (Platform.isAndroid) {
+      await requestBluetooth();
+    }
+    isScanningStream = FlutterBluePlus.isScanning.listen((state) {
+      isScanning = state;
+      if (mounted) {
+        setState(() {});
+      }
+    });
+    subscription = FlutterBluePlus.adapterState.listen((event) async {
+      if (event == BluetoothAdapterState.on) {
+        log("Bluetooth is on");
+        startScan();
+      }
+    });
+  }
+
+  Future<void> requestBluetooth() async {
+    if (await Permission.bluetoothScan.isDenied) {
+      await Permission.bluetoothScan.request();
+    }
+    if (await Permission.bluetoothConnect.isDenied) {
+      await Permission.bluetoothConnect.request();
+    }
+    if (await Permission.location.isDenied) {
+      await Permission.location.request();
+    }
+    await FlutterBluePlus.turnOn();
+    await FlutterBluePlus.adapterState
+        .where((val) => val == BluetoothAdapterState.on)
+        .first;
+  }
+
+  void startScan() async {
+    await FlutterBluePlus.startScan(
+      timeout: const Duration(seconds: 10),
+      androidUsesFineLocation: true,
+    );
+    scanner = FlutterBluePlus.onScanResults.listen(
+      (event) {
+        if (event.isNotEmpty) {
+          devices = event
+              .where(
+                (e) =>
+                    e.device.platformName != "" &&
+                    e.advertisementData.connectable,
+              )
+              .toList();
+          connections = List.generate(devices.length, (_) => false);
+          isConnecting = List.generate(devices.length, (_) => false);
+          setState(() {});
+        }
+      },
+      onError: (e) => log('Error: $e'),
+    );
+    FlutterBluePlus.cancelWhenScanComplete(subscription);
+  }
+
+  void toggleConnect(int i) {
+    try {
+      connect = devices[i]
+          .device
+          .connectionState
+          .listen((BluetoothConnectionState state) async {
+        if (state == BluetoothConnectionState.disconnected) {
+          connections[i] = false;
+        }
+        setState(() {});
+      });
+      connect.onDone(
+        () => log("Connection closed"),
+      );
+    } on Object catch (e) {
+      log(e.toString());
+    } finally {
+      connect.cancel();
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    startMain();
+  }
+
+  @override
+  void dispose() {
+    subscription.cancel();
+    isScanningStream.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          "Found Devices",
+          style: context.textTheme.titleLarge,
+        ),
+        actions: [
+          isScanning
+              ? const CircularProgressIndicator.adaptive()
+              : IconButton(
+                  onPressed: startScan,
+                  icon: const FaIcon(FontAwesomeIcons.rotateLeft),
+                ),
+          const SizedBox(width: 20),
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async {
+          startScan();
+        },
+        child: ListView(
+          children: [
+            for (int i = 0; i < devices.length; i++)
+              ListTile(
+                onTap: () {},
+                title: Row(
+                  children: [
+                    Text(
+                      devices[i].device.platformName,
+                      style: context.textTheme.titleMedium,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const Spacer(),
+                    Text(
+                      "${devices[i].rssi * -1}%",
+                      style: context.textTheme.titleMedium,
+                    ),
+                  ],
+                ),
+                subtitle: Text(devices[i].device.remoteId.str),
+                trailing: isConnecting[i]
+                    ? OutlinedButton(
+                        onPressed: () {},
+                        child: const CircularProgressIndicator(),
+                      )
+                    : devices[i].device.isConnected
+                        ? OutlinedButton(
+                            onPressed: () async {
+                              isConnecting[i] = true;
+                              setState(() {});
+                              await devices[i].device.disconnect();
+                              isConnecting[i] = false;
+                              setState(() {});
+                            },
+                            child: const Text("Connected"),
+                          )
+                        : FilledButton(
+                            onPressed: () async {
+                              isConnecting[i] = true;
+                              setState(() {});
+                              for (int j = 0; j < 3; j++) {
+                                try {
+                                  await Future.delayed(
+                                    const Duration(seconds: 1),
+                                  );
+                                  await devices[i]
+                                      .device
+                                      .connect(autoConnect: false);
+                                  connections[i] = true;
+                                  break;
+                                } on Object catch (e) {
+                                  log(e.toString());
+                                  if (j == 2 && context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          "Couldn't connect to ${devices[i].device.platformName}",
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                }
+                              }
+                              isConnecting[i] = false;
+                              setState(() {});
+                            },
+                            child: const Text("Connect"),
+                          ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}

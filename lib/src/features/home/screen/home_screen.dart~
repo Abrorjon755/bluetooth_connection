@@ -1,0 +1,240 @@
+import 'dart:async';
+import 'dart:developer';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+import '../../../common/utils/context_extension.dart';
+import 'widgets/info_dialog.dart';
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  late final StreamSubscription<bool> isScanningStream;
+  late final StreamSubscription<BluetoothAdapterState> subscription;
+  late final StreamSubscription<List<ScanResult>> scanner;
+  List<ScanResult> devices = [];
+  List<bool> connections = [];
+  bool isScanning = false;
+  List<bool> isConnecting = [];
+
+  Future<void> startMain() async {
+    if (Platform.isAndroid) {
+      await requestBluetooth();
+    }
+    isScanningStream = FlutterBluePlus.isScanning.listen((e) {
+      isScanning = e;
+      if (mounted) {
+        setState(() {});
+      }
+    });
+    subscription = FlutterBluePlus.adapterState.listen((event) async {
+      if (event == BluetoothAdapterState.on) {
+        log("Bluetooth is on");
+        startScan();
+      }
+    });
+  }
+
+  Future<void> requestBluetooth() async {
+    if (await Permission.bluetoothScan.isDenied) {
+      await Permission.bluetoothScan.request();
+    }
+    if (await Permission.bluetoothConnect.isDenied) {
+      await Permission.bluetoothConnect.request();
+    }
+    if (await Permission.location.isDenied) {
+      await Permission.location.request();
+    }
+    await FlutterBluePlus.turnOn();
+    await FlutterBluePlus.adapterState
+        .where((val) => val == BluetoothAdapterState.on)
+        .first;
+  }
+
+  Future<void> startScan() async {
+    await FlutterBluePlus.startScan(
+      timeout: const Duration(seconds: 10),
+      androidUsesFineLocation: true,
+    );
+    scanner = FlutterBluePlus.onScanResults.listen(
+      sortDeviceList,
+      onError: (e) => log('Error: $e'),
+    );
+    FlutterBluePlus.cancelWhenScanComplete(subscription);
+  }
+
+  void sortDeviceList(List<ScanResult> ev) {
+    if (ev.isNotEmpty) {
+      devices = ev
+          .where(
+            (e) => e.device.platformName != "",
+          )
+          .toList();
+      devices.sort((a, b) => a.rssi > b.rssi ? 1 : -1);
+      connections = List.generate(devices.length, (_) => false);
+      isConnecting = List.generate(devices.length, (_) => false);
+      setState(() {});
+    }
+  }
+
+  Future<void> stopScan() async {
+    await FlutterBluePlus.stopScan();
+    FlutterBluePlus.cancelWhenScanComplete(subscription);
+  }
+
+  void tryConnect(BuildContext context, int i) async {
+    isConnecting[i] = true;
+    setState(() {});
+    for (int j = 0; j < 3; j++) {
+      try {
+        await Future.delayed(
+          const Duration(seconds: 1),
+        );
+        await devices[i].device.connect(autoConnect: false);
+        isConnecting[i] = false;
+        setState(() {});
+        break;
+      } on Object catch (e) {
+        log(e.toString());
+        if (j == 2 && context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                "Couldn't connect to ${devices[i].device.platformName}",
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          );
+        }
+      }
+    }
+    isConnecting[i] = false;
+    setState(() {});
+  }
+
+  void tryDisconnect(int i) async {
+    isConnecting[i] = true;
+    setState(() {});
+    await devices[i].device.disconnect();
+    isConnecting[i] = false;
+    setState(() {});
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    startMain();
+  }
+
+  @override
+  void dispose() {
+    subscription.cancel();
+    isScanningStream.cancel();
+    scanner.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          "Found Devices",
+          style: context.textTheme.titleLarge,
+        ),
+        actions: [
+          isScanning
+              ? IconButton(
+                  onPressed: stopScan,
+                  icon: const FaIcon(FontAwesomeIcons.stop),
+                )
+              : IconButton(
+                  onPressed: startScan,
+                  icon: const FaIcon(FontAwesomeIcons.rotateLeft),
+                ),
+          const SizedBox(width: 20),
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async => await startScan(),
+        child: ListView(
+          children: [
+            for (int i = 0; i < devices.length; i++)
+              ListTile(
+                visualDensity: const VisualDensity(vertical: 1),
+                onTap: () async {
+                  final result = await showDialog<bool>(
+                    context: context,
+                    builder: (context) => InfoDialog(
+                      device: devices[i],
+                    ),
+                  );
+                  if (result == true && context.mounted) {
+                    tryConnect(context, i);
+                  } else if (result == false && context.mounted) {
+                    tryDisconnect(i);
+                  }
+                },
+                title: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        devices[i].device.platformName,
+                        style: context.textTheme.titleMedium,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      "${devices[i].rssi * -1}%",
+                      style: context.textTheme.titleMedium,
+                    ),
+                  ],
+                ),
+                subtitle: Text(devices[i].device.remoteId.str),
+                trailing: isConnecting[i]
+                    ? OutlinedButton(
+                        onPressed: () {},
+                        child: const CircularProgressIndicator(),
+                      )
+                    : devices[i].device.isConnected
+                        ? OutlinedButton(
+                            onPressed: () => tryDisconnect(i),
+                            child: const Text("Connected"),
+                          )
+                        : devices[i].advertisementData.connectable
+                            ? FilledButton(
+                                onPressed: () => tryConnect(context, i),
+                                child: const Text("Connect"),
+                              )
+                            : FilledButton(
+                                style: ButtonStyle(
+                                  backgroundColor: WidgetStatePropertyAll(
+                                    context.colors.primaryContainer,
+                                  ),
+                                  overlayColor: WidgetStateColor.transparent,
+                                ),
+                                onPressed: () {},
+                                child: const Text("Connect"),
+                              ),
+              ),
+            isScanning
+                ? const Center(child: CircularProgressIndicator.adaptive())
+                : const SizedBox()
+          ],
+        ),
+      ),
+    );
+  }
+}
